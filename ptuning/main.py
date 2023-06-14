@@ -40,21 +40,17 @@ from transformers import (
     Seq2SeqTrainingArguments,
     set_seed,
 )
-from trainer_seq2seq import Seq2SeqTrainer
+from ChatGLM6Bpkg.ptuning.trainer_seq2seq import Seq2SeqTrainer
 
-from arguments import ModelArguments, DataTrainingArguments
+from ChatGLM6Bpkg.ptuning.arguments import ModelArguments, DataTrainingArguments
 
 logger = logging.getLogger(__name__)
 
-def main():
+
+def ptuning(**args):
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    model_args, data_args, training_args = parser.parse_dict(args)
 
     # Setup logging
     logging.basicConfig(
@@ -421,10 +417,84 @@ def main():
     return results
 
 
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
+def load_ptuning_checkpoint(
+        model_name_or_path,
+        ptuning_checkpoint,
+        pre_seq_len,
+        trust_remote_code=True,
+        quantization_bit=None
+    ):
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+
+    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code, pre_seq_len=pre_seq_len)
+    model = AutoModel.from_pretrained(model_name_or_path, config=config, trust_remote_code=trust_remote_code)
+
+    prefix_state_dict = torch.load(os.path.join(ptuning_checkpoint, "pytorch_model.bin"))
+    new_prefix_state_dict = {}
+    for k, v in prefix_state_dict.items():
+        if k.startswith("transformer.prefix_encoder."):
+            new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
+    model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
+
+    if quantization_bit is not None:
+        print(f"Quantized to {quantization_bit} bit")
+        model = model.quantize(quantization_bit)
+
+    model = model.half()
+    model.transformer.prefix_encoder.float()
+
+    return tokenizer, config, model
+
+
+# def _mp_fn(index):
+#     # For xla_spawn (TPUs)
+#     main()
 
 
 if __name__ == "__main__":
-    main()
+    # mode = "train"
+    mode = "evaluate"
+
+    if mode == "train":
+        ptuning(
+            do_train=True,
+            train_file="AdvertiseGen/train.json",
+            validation_file="AdvertiseGen/dev.json",
+            prompt_column="content",
+            response_column="summary",
+            overwrite_cache=True,
+            model_name_or_path="THUDM/chatglm-6b",
+            output_dir="output/adgen-chatglm-6b-pt-128-2e-2",
+            overwrite_output_dir=True,
+            max_source_length=64,
+            max_target_length=64,
+            per_device_train_batch_size=1,
+            per_device_eval_batch_size=1,
+            gradient_accumulation_steps=16,
+            predict_with_generate=True,
+            max_steps=3000,
+            logging_steps=10,
+            save_steps=100,
+            learning_rate=2e-2,
+            pre_seq_len=128,
+            quantization_bit=4
+        )
+    elif mode == "evaluate":
+        ptuning(
+            do_predict=True,
+            validation_file="AdvertiseGen/dev.json",
+            test_file="AdvertiseGen/dev.json",
+            overwrite_cache=True,
+            prompt_column="content",
+            response_column="summary",
+            model_name_or_path="THUDM/chatglm-6b",
+            ptuning_checkpoint="./output/adgen-chatglm-6b-pt-128-2e-2/checkpoint-100",
+            output_dir="./output/adgen-chatglm-6b-pt-128-2e-2",
+            overwrite_output_dir=True,
+            max_source_length=64,
+            max_target_length=64,
+            per_device_eval_batch_size=1,
+            predict_with_generate=True,
+            pre_seq_len=128,
+            quantization_bit=4
+        )

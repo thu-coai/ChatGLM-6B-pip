@@ -7,6 +7,8 @@ DEVICE = "cuda"
 DEVICE_ID = "0"
 CUDA_DEVICE = f"{DEVICE}:{DEVICE_ID}" if DEVICE_ID else DEVICE
 
+api_model, api_tokenizer = None, None
+
 
 def torch_gc():
     if torch.cuda.is_available():
@@ -20,7 +22,7 @@ app = FastAPI()
 
 @app.post("/")
 async def create_item(request: Request):
-    global model, tokenizer
+    global api_model, api_tokenizer
     json_post_raw = await request.json()
     json_post = json.dumps(json_post_raw)
     json_post_list = json.loads(json_post)
@@ -29,7 +31,7 @@ async def create_item(request: Request):
     max_length = json_post_list.get('max_length')
     top_p = json_post_list.get('top_p')
     temperature = json_post_list.get('temperature')
-    response, history = model.chat(tokenizer,
+    response, history = api_model.chat(api_tokenizer,
                                    prompt,
                                    history=history,
                                    max_length=max_length if max_length else 2048,
@@ -49,8 +51,31 @@ async def create_item(request: Request):
     return answer
 
 
+def launch_server(
+        model_name_or_path="THUDM/chatglm-6b",
+        trust_remote_code=True,
+        model=None,
+        tokenizer=None,
+        host="0.0.0.0",
+        port=8000,
+        workers=1,
+    ):
+    global api_model, api_tokenizer
+    if tokenizer is None:
+        api_tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+    else:
+        api_tokenizer = tokenizer
+    if model is None:
+        api_model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code).half().cuda()
+        api_model = api_model.eval()
+    else:
+        api_model = model
+    uvicorn.run(app, host=host, port=port, workers=workers)
+
+
 if __name__ == '__main__':
-    tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True)
-    model = AutoModel.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True).half().cuda()
-    model.eval()
-    uvicorn.run(app, host='0.0.0.0', port=8000, workers=1)
+    model_name_or_path = "THUDM/chatglm-6b"
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True).float()
+    model = model.eval()
+    launch_server(model=model, tokenizer=tokenizer)

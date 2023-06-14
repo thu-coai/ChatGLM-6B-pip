@@ -4,9 +4,7 @@ import signal
 from transformers import AutoTokenizer, AutoModel
 import readline
 
-tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True)
-model = AutoModel.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True).half().cuda()
-model = model.eval()
+cli_demo_model, cli_demo_tokenizer = None, None
 
 os_name = platform.system()
 clear_command = 'cls' if os_name == 'Windows' else 'clear'
@@ -26,7 +24,23 @@ def signal_handler(signal, frame):
     stop_stream = True
 
 
-def main():
+def launch_cli_demo(
+        model_name_or_path="THUDM/chatglm-6b",
+        trust_remote_code=True,
+        model=None,
+        tokenizer=None,
+    ):
+    global cli_demo_model, cli_demo_tokenizer
+    if tokenizer is None:
+        cli_demo_tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+    else:
+        cli_demo_tokenizer = tokenizer
+    if model is None:
+        cli_demo_model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code).half().cuda()
+        cli_demo_model = cli_demo_model.eval()
+    else:
+        cli_demo_model = model
+
     history = []
     global stop_stream
     print("欢迎使用 ChatGLM-6B 模型，输入内容即可进行对话，clear 清空对话历史，stop 终止程序")
@@ -40,7 +54,7 @@ def main():
             print("欢迎使用 ChatGLM-6B 模型，输入内容即可进行对话，clear 清空对话历史，stop 终止程序")
             continue
         count = 0
-        for response, history in model.stream_chat(tokenizer, query, history=history):
+        for response, history in cli_demo_model.stream_chat(cli_demo_tokenizer, query, history=history):
             if stop_stream:
                 stop_stream = False
                 break
@@ -55,4 +69,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    model_name_or_path = "THUDM/chatglm-6b"
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True).float()
+    model = model.eval()
+    launch_cli_demo(model=model, tokenizer=tokenizer)
